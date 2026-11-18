@@ -3,6 +3,8 @@
 Mascote de desktop em pixel art que reage ao [Claude Code](https://claude.com/claude-code).
 Janela transparente, sempre no topo, feita com PyQt6.
 
+![Clawd em algumas das animações](docs/clawd.gif)
+
 ## O que ele faz
 - Mostra o que o Claude está fazendo: pensando, programando, lendo, buscando, testando, comemorando
   testes que passam, ficando triste quando falham, assustado com erros, alerta quando pede permissão.
@@ -35,6 +37,7 @@ Os quadros ficam em `sprites/` (`{folha}{n}.png`) e vêm de folhas 8x4 com fundo
 ```bash
 python tools/montar_frente.py sprites c=costas.png d=direita_acoes.png ...
 python tools/galeria.py     # gera galeria.html com todas as animações
+python tools/gerar_gif.py   # gera docs/clawd.gif (o GIF deste README)
 ```
 As animações e o mapeamento estado → animação estão no topo de `clawd.py` (`ANIMS`, `STATE_SPRITE`).
 
