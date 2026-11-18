@@ -41,6 +41,9 @@ As animações e o mapeamento estado → animação estão no topo de `clawd.py`
 ## Créditos
 Os sprites foram gerados com IA (ChatGPT, da OpenAI) e depois recortados e limpos com `tools/montar_frente.py`.
 
+## Licença
+Código sob licença MIT (veja `LICENSE`). Os sprites foram gerados por IA; confira os termos de uso do gerador antes de redistribuí-los.
+
 ## Arquivos
 | Arquivo | Função |
 |---|---|
