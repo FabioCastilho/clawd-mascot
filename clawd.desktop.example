@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Clawd
+# Troque CAMINHO pela pasta onde o projeto está (use o python do seu venv).
+Exec=CAMINHO/.venv/bin/python CAMINHO/clawd.py
+Path=CAMINHO
+Terminal=false

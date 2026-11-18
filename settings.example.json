@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart":     [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py SessionStart"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py UserPromptSubmit"}]}],
+    "PreToolUse":       [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py PreToolUse"}]}],
+    "PostToolUse":      [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py PostToolUse"}]}],
+    "PostToolUseFailure": [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py PostToolUseFailure"}]}],
+    "Notification":     [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py Notification"}]}],
+    "Stop":             [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py Stop"},
+                                    {"type": "command", "command": "CAMINHO/.venv/bin/python CAMINHO/speak.py"}]}]
+  }
+}

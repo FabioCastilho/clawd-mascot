@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+antigos/
+# modelos de voz (grandes): baixe à parte, veja o README
+voices/
