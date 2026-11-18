@@ -696,6 +696,8 @@ def main():
     w.show()
     import voice  # noqa: E402
     voice.attach(w)
+    import ditado  # noqa: E402
+    ditado.attach(w)
     sys.exit(app.exec())
 
 

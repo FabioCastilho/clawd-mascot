@@ -1,10 +1,13 @@
 #!/bin/sh
 # Liga/desliga a escuta por voz do Clawd (o microfone só fica aberto enquanto estiver ligado).
+# `clawd-voz gravar` = ditado por atalho: 1ª vez começa a gravar, 2ª vez transcreve, corrige e envia.
 F="${XDG_RUNTIME_DIR:-/tmp}/clawd.voice-on"
+G="${XDG_RUNTIME_DIR:-/tmp}/clawd.gravando"
 case "$1" in
   on|ligar)     touch "$F"; echo "voz ligada: diga 'Clawd, ...'";;
   off|desligar) rm -f "$F"; echo "voz desligada (microfone fechado)";;
   toggle)       if [ -e "$F" ]; then rm -f "$F"; echo desligada; else touch "$F"; echo ligada; fi;;
+  gravar)       if [ -e "$G" ]; then rm -f "$G"; echo "enviando…"; else touch "$G"; echo "gravando…"; fi;;
   status|"")    [ -e "$F" ] && echo ligada || echo desligada;;
-  *) echo "uso: clawd-voz on|off|toggle|status"; exit 1;;
+  *) echo "uso: clawd-voz on|off|toggle|status|gravar"; exit 1;;
 esac

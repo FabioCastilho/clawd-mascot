@@ -29,6 +29,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 ENABLED = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.voice-on"  # created by `clawd-voz on`
 SPEAKING = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.speaking"
+PTT = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.gravando"  # ditado por atalho (ditado.py) em andamento
 RATE = 16000
 BLOCK = 512  # 32 ms
 MIN_SEG = 0.35  # seconds of speech needed to bother transcribing
@@ -50,6 +51,22 @@ JUNK = {"", "obrigado", "tchau", "legendas pela comunidade amara.org", "e ai", "
 def norm(s):
     s = unicodedata.normalize("NFKD", s.lower()).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9 ]", "", s).strip()
+
+
+# ---------- Modelo do whisper (compartilhado com o ditado por atalho) -----------------------------------------------
+
+MODEL_LOCK = threading.Lock()
+_MODEL = None
+
+
+def get_model():
+    global _MODEL
+    with MODEL_LOCK:
+        if _MODEL is None:
+            from faster_whisper import WhisperModel
+
+            _MODEL = WhisperModel(os.environ.get("CLAWD_VOICE_MODEL", "small"), device="cpu", compute_type="int8")
+        return _MODEL
 
 
 # ---------- Konsole -------------------------------------------------------------------------------------------------
@@ -162,7 +179,7 @@ class Voice(QObject):
                 blk = self.q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if SPEAKING.exists():  # Clawd is talking: don't hear ourselves
+            if SPEAKING.exists() or PTT.exists():  # Clawd is talking / ditado por atalho gravando: don't hear it
                 speech, buf, silent, self.was_speaking = False, [], 0.0, True
                 continue
             if self.was_speaking:  # he just finished a spoken reply: keep the conversation going without his name
@@ -189,9 +206,11 @@ class Voice(QObject):
                 buf = []
 
     def transcribe(self, model, audio):
-        segs, _ = model.transcribe(audio, language=os.environ.get("CLAWD_VOICE_LANG", "pt"), beam_size=1,
-                                   vad_filter=False, condition_on_previous_text=False,
-                                   initial_prompt="Clawd, Claude Code, terminal, Python, git.")
+        with MODEL_LOCK:
+            segs, _ = model.transcribe(audio, language=os.environ.get("CLAWD_VOICE_LANG", "pt"), beam_size=1,
+                                       vad_filter=False, condition_on_previous_text=False,
+                                       initial_prompt="Clawd, Claude Code, terminal, Python, git.")
+            segs = list(segs)
         return " ".join(s.text.strip() for s in segs).strip()
 
     # --- logic
@@ -202,9 +221,7 @@ class Voice(QObject):
             for audio, t0 in self.segments():
                 if model is None:
                     try:
-                        from faster_whisper import WhisperModel
-
-                        model = WhisperModel(os.environ.get("CLAWD_VOICE_MODEL", "small"), device="cpu", compute_type="int8")
+                        model = get_model()
                     except Exception as e:  # noqa: BLE001
                         self.log("faltam dependências (rode com .venv/bin/python):", e)
                         return

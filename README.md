@@ -27,6 +27,21 @@ Os hooks escrevem o estado em `$XDG_RUNTIME_DIR/clawd.state`. Copie `settings.ex
 `hooks` do seu `~/.claude/settings.json`, trocando `CAMINHO` pela pasta do projeto. `clawd-hook.py` lê o JSON
 do hook e escolhe o estado pela ferramenta usada.
 
+## Ditado por atalho (aperta para gravar, aperta para enviar)
+1. Em *Configurações do Sistema → Atalhos → Comandos personalizados*, crie um atalho de teclado que rode
+   `CAMINHO/clawd-voz gravar`.
+2. Aperte o atalho: o Clawd fica ouvindo. Fale à vontade, com pausas.
+3. Aperte de novo: ele transcreve tudo de uma vez (offline), corrige o português, digita no terminal do Claude
+   e aperta Enter.
+
+| Variável | Efeito |
+|---|---|
+| `CLAWD_DITADO_ENTER=0` | digita mas não aperta Enter (para você revisar) |
+| `CLAWD_DITADO_CORRECAO=local` | padrão: regras locais (espaços, maiúsculas, pontuação, "hum") |
+| `CLAWD_DITADO_CORRECAO=haiku` | também revisa com o Claude Haiku (`claude -p`, sem ferramentas); **o texto é enviado à Anthropic** |
+| `CLAWD_DITADO_CORRECAO=off` | sem correção |
+| `CLAWD_DITADO=0` | desliga o recurso |
+
 ## Voz (opcional)
 `voice.py` escuta o microfone (faster-whisper, offline) e `speak.py` fala ao fim de cada resposta (Piper ou
 Kokoro). Os modelos vão em `voices/` (fora do git, são grandes). Instale as dependências extras do
@@ -53,5 +68,5 @@ Código sob licença MIT (veja `LICENSE`). Os sprites foram gerados por IA; conf
 | `clawd.py` | o mascote (janela, animações, passeio, menu) |
 | `clawd-hook.py` | hook do Claude Code: escolhe o estado |
 | `usage.py` | uso de tokens lido de `~/.claude/projects` |
-| `voice.py`, `speak.py`, `clawd-voz` | escuta e fala (opcionais) |
+| `voice.py`, `ditado.py`, `speak.py`, `clawd-voz` | escuta, ditado por atalho e fala (opcionais) |
 | `tools/` | recorte das folhas e galeria |
