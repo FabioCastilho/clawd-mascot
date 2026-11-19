@@ -64,6 +64,23 @@ def pocket_wav(text, wav):
     return os.path.getsize(wav) > 1000
 
 
+def pronunciar(text):
+    """Troca palavras em inglês por uma grafia que a voz fala melhor (veja pronuncia.txt)."""
+    try:
+        linhas = (HERE / "pronuncia.txt").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return text
+    pares = []
+    for l in linhas:
+        if "=>" in l and not l.lstrip().startswith("#"):
+            a, b = (x.strip() for x in l.split("=>", 1))
+            if a and b:
+                pares.append((a, b))
+    for a, b in sorted(pares, key=lambda p: -len(p[0])):  # as mais longas primeiro ("Claude Code" antes de "Claude")
+        text = re.sub(rf"(?<![\w-]){re.escape(a)}(?![\w-])", b, text, flags=re.I)
+    return text
+
+
 def last_reply(data):
     if data.get("last_assistant_message"):
         return data["last_assistant_message"]
@@ -142,6 +159,7 @@ def main():
         os.kill(int(FLAG.read_text()), 15)
     except (OSError, ValueError):
         pass
+    text = pronunciar(text)
     wav = tempfile.mktemp(suffix=".wav", prefix="clawd-")
     if NAME.startswith("pocket:"):  # e.g. "pocket:rafael" (Pocket TTS, servidor local em CPU)
         try:

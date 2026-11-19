@@ -88,15 +88,18 @@ O arquivo `vocabulario.txt` guarda palavras que o whisper costuma errar: uma por
 
 | Valor | Motor |
 |---|---|
-| **`supertonic:F4`** (a que uso) | [Supertonic 3](https://github.com/supertone-oss-archive/supertonic): 10 vozes (`F1`-`F5`, `M1`-`M5`) |
+| **`supertonic:F2`** (a que uso) | [Supertonic 3](https://github.com/supertone-oss-archive/supertonic): 10 vozes (`F1`-`F5`, `M1`-`M5`) |
 | `pocket:rafael` | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), sobe um servidor local (porta 8765) |
 | `kokoro:pf_dora`, `kokoro:pm_alex` | Kokoro (pt-BR, offline) |
 | `pt_BR-faber-medium` etc. | Piper |
 
+O Supertonic roda com 16 passos e velocidade 1,05 (`CLAWD_SUPERTONIC_PASSOS`, `CLAWD_SUPERTONIC_VELOCIDADE`; mais passos = mais natural e mais lento).
+Palavras em inglês (GitHub, commit...) ganham uma grafia mais falável em `pronuncia.txt`; edite à vontade.
+
 Instalação do Supertonic (só CPU, ~200 MB):
 ```bash
 python -m venv .venv-super && .venv-super/bin/pip install supertonic soundfile
-echo -n supertonic:F4 > voices/current
+echo -n supertonic:F2 > voices/current
 ```
 Os modelos do Kokoro/Piper vão em `voices/` (fora do git, são grandes); veja `requirements.txt`.
 
