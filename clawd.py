@@ -556,6 +556,7 @@ class Clawd(QWidget):
         self.fila_avisos = []
         self._aviso_anim = ("", 0.0)
         self._estado_ant = None
+        self._lim_t = 0.0
         self.home = (0, 0)
         self.retorno = False  # interrompido longe do canto: volta deslizando
         self.panel = MenuPanel(self)
@@ -719,6 +720,9 @@ class Clawd(QWidget):
             self.fila_avisos += self.habitos.ao_mudar_estado(self._estado_ant, self.state, agora)
             self._estado_ant = self.state
         self.fila_avisos += self.habitos.tick(self.state, agora)
+        if agora - self._lim_t >= 30:                      # limites do plano: confere a cada 30 s
+            self._lim_t = agora
+            self.fila_avisos += self.habitos.avisos_limites(usage.limites(), agora)
         self.balao.tick(now)
         if self.fila_avisos and not self.balao.isVisible() and not self.pendurado and not self.caindo:
             self.mostrar_aviso(self.fila_avisos.pop(0), now)

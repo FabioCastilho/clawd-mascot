@@ -15,17 +15,22 @@ Janela transparente, sempre no topo, feita com PyQt6.
 
 ## Instalar
 ```bash
-python -m venv .venv && .venv/bin/pip install PyQt6 python-xlib
+git clone https://github.com/FabioCastilho/clawd-mascot && cd clawd-mascot
+./install.sh          # cria o .venv, instala as dependências, liga os hooks e o statusLine do Claude Code e o autostart
+./install.sh --voz    # também escuta/fala/ditado (dependências grandes) e o atalho Ctrl+Alt+Espaço (KDE)
 .venv/bin/python clawd.py
 ```
+O instalador faz backup do seu `~/.claude/settings.json`, só acrescenta o que é do Clawd (pode rodar de novo sem duplicar)
+e não sobrescreve um `statusLine` que você já tenha (avisa como encadear). `./install.sh --desinstalar` tira tudo.
+Opções: `--sem-autostart`, `--dry-run` (só mostra o que faria).
+
 `CLAWD_ANDAR=0` desliga o passeio; `CLAWD_VOICE=0` desliga a escuta por voz; `CLAWD_SPEAK=0` desliga a fala.
-Linux (X11/XWayland). Para abrir no login, copie `clawd.desktop.example` para `~/.config/autostart/clawd.desktop`
-e troque `CAMINHO`.
+Linux (X11/XWayland). À mão, sem o script: `pip install PyQt6 Pillow numpy python-xlib`, copie `settings.example.json`
+para o `~/.claude/settings.json` e `clawd.desktop.example` para `~/.config/autostart/`, trocando `CAMINHO`.
 
 ## Ligar ao Claude Code
-Os hooks escrevem o estado em `$XDG_RUNTIME_DIR/clawd.state`. Copie `settings.example.json` para o bloco
-`hooks` do seu `~/.claude/settings.json`, trocando `CAMINHO` pela pasta do projeto. `clawd-hook.py` lê o JSON
-do hook e escolhe o estado pela ferramenta usada.
+Os hooks escrevem o estado em `$XDG_RUNTIME_DIR/clawd.state`. `clawd-hook.py` lê o JSON do hook e escolhe o estado
+pela ferramenta usada. O `install.sh` já configura isso; o `settings.example.json` mostra o resultado.
 
 ## Skins
 O botão de losango no menu (duplo clique) troca a skin e lembra a escolha (`~/.clawd-skin`). Vêm 6 além do
@@ -53,6 +58,11 @@ conversa**, com a hora da renovação e uma projeção do ritmo ("no ritmo atual
 números vêm do próprio Claude Code, por meio do `statusLine` (veja o bloco `statusLine` em `settings.example.json`):
 `clawd-statusline.py` guarda os limites e um histórico curto em `$XDG_RUNTIME_DIR/clawd.limites.json` e não
 imprime nada na linha de status. Eles só atualizam enquanto o Claude Code está em uso.
+
+**Avisos de limite:** o Clawd solta um balão (uma vez por janela) quando o limite de 5 h ou o semanal passa de 80% e de 95%,
+e quando o ritmo atual vai esgotá-lo antes da renovação ("No ritmo atual o limite 5 h acaba em ~40 min"). Não avisa
+se os dados têm mais de 30 min (Claude Code parado). Para ver o balão sem esperar, grave um `clawd.limites.json` falso
+com `five_hour.used_percentage` em 85 (o `statusLine` o sobrescreve na próxima atualização).
 
 ## Ditado por atalho (aperta para gravar, aperta para enviar)
 1. Em *Configurações do Sistema → Atalhos → Comandos personalizados*, crie um atalho de teclado que rode
@@ -104,4 +114,5 @@ Código sob licença MIT (veja `LICENSE`). Os sprites foram gerados por IA; conf
 | `habitos.py` | saudações, lembretes e conquistas |
 | `usage.py` | lê os limites guardados e estima o ritmo |
 | `voice.py`, `ditado.py`, `speak.py`, `clawd-voz` | escuta, ditado por atalho e fala (opcionais) |
-| `tools/` | recorte das folhas e galeria |
+| `install.sh`, `tools/instalar.py` | instalação: venv, hooks, statusLine, autostart, atalho |
+| `tools/` | recorte das folhas, galeria e GIFs |

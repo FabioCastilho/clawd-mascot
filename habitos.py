@@ -14,6 +14,7 @@ from pathlib import Path
 
 ESTADO = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "clawd" / "estado.json"
 DESCANSO_SEG = int(os.environ.get("CLAWD_DESCANSO_MIN", "120")) * 60
+DADO_VELHO = 1800     # limites com mais de 30 min não avisam (o Claude Code não está em uso)
 PAUSA_QUE_ZERA = 600  # 10 min parado = contou como pausa
 
 Aviso = namedtuple("Aviso", "texto anim fala seg")
@@ -77,6 +78,44 @@ class Habitos:
     def lista(self):
         """[(nome, descrição, desbloqueada)] na ordem de CONQUISTAS."""
         return [(n, desc, k in self.d["conquistas"]) for k, (n, desc) in CONQUISTAS.items()]
+
+    # --- limites do plano
+    def avisos_limites(self, lim, agora):
+        """Balão quando um limite passa de 80% / 95% ou quando o ritmo atual vai esgotá-lo antes da renovação.
+        `lim` é o resultado de usage.limites(). Cada aviso sai uma vez por janela (guardado em estado.json)."""
+        if not lim or lim.get("idade", 0) > DADO_VELHO:
+            return []
+        feitos = self.d.setdefault("alertas", {})
+        for k in [k for k, ate in feitos.items() if ate < agora]:   # limpa janelas que já renovaram
+            del feitos[k]
+        avisos = []
+        for chave, rotulo in (("cinco_horas", "5 h"), ("semana", "semanal")):
+            j = lim.get(chave)
+            if not j or j.get("renovou") or not j.get("reset"):
+                continue
+            quando = time.strftime("%H:%M", time.localtime(j["reset"])) if j["reset"] - agora < 86400 else \
+                time.strftime("%a %H:%M", time.localtime(j["reset"]))
+            pct = int(j["pct"])
+            for nivel in (95, 80):
+                if pct >= nivel:
+                    k = f"{chave}:{j['reset']}:{nivel}"
+                    if not any(f.startswith(f"{chave}:{j['reset']}:") and int(f.rsplit(":", 1)[1]) >= nivel
+                               for f in feitos if f.rsplit(":", 1)[1].isdigit()):
+                        feitos[k] = j["reset"]
+                        t = f"Limite {rotulo} em {pct}%. Renova {quando}."
+                        avisos.append(Aviso(t, "alert", t, 7.0))
+                    break
+            if j.get("esgota_em") is not None and pct < 95:
+                k = f"{chave}:{j['reset']}:proj"
+                if k not in feitos:
+                    feitos[k] = j["reset"]
+                    m = max(1, int(j["esgota_em"] // 60))
+                    dur = f"{m} min" if m < 120 else f"{m // 60} h"
+                    t = f"No ritmo atual o limite {rotulo} acaba em ~{dur}, antes de renovar ({quando})."
+                    avisos.append(Aviso(t, "alert", t, 9.0))
+        if avisos:
+            self.salvar()
+        return avisos
 
     # --- sequência de dias
     def _registrar_dia(self, agora):
