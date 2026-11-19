@@ -15,12 +15,53 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 _CUR = HERE / "voices" / "current"  # name of the chosen voice, e.g. pt_BR-faber-medium (change with `clawd-fala <nome>`)
-NAME = _CUR.read_text().strip() if _CUR.exists() else "pt_BR-faber-medium"  # "kokoro:<voz>" or a Piper voice name
+NAME = _CUR.read_text().strip() if _CUR.exists() else "pt_BR-faber-medium"  # "supertonic:<voz>", "pocket:<voz>", "kokoro:<voz>" or a Piper voice name
 MODEL = HERE / "voices" / f"{NAME}.onnx"
 FLAG = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.speaking"
 PTT = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.gravando"    # ditado por atalho gravando (ditado.py)
 PENDENTE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.pendente"  # resposta que ficou sem ser falada
+POCKET_PORT = int(os.environ.get("CLAWD_POCKET_PORT", "8765"))
+SUPER_PY = HERE / ".venv-super" / "bin" / "python"
+POCKET_BIN = HERE / ".venv-pocket" / "bin" / "pocket-tts"
 MAX_CHARS = int(os.environ.get("CLAWD_SPEAK_CHARS", "220"))
+
+
+def pocket_servidor(espera=60):
+    """Garante o servidor do Pocket TTS no ar (o modelo fica na memória e responde em ~1 s). Devolve True se pronto."""
+    import urllib.request
+
+    def no_ar():
+        try:
+            return urllib.request.urlopen(f"http://127.0.0.1:{POCKET_PORT}/health", timeout=1).status == 200
+        except OSError:
+            return False
+
+    if no_ar():
+        return True
+    if not POCKET_BIN.exists():
+        return False
+    voz = NAME.split(":", 1)[1] if ":" in NAME else "rafael"
+    subprocess.Popen([str(POCKET_BIN), "serve", "--host", "127.0.0.1", "--port", str(POCKET_PORT),
+                      "--language", "portuguese", "--default-voice", voz],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    fim = time.time() + espera
+    while time.time() < fim:
+        if no_ar():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def pocket_wav(text, wav):
+    import urllib.parse
+    import urllib.request
+    if not pocket_servidor():
+        return False
+    req = urllib.request.Request(f"http://127.0.0.1:{POCKET_PORT}/tts", data=urllib.parse.urlencode({"text": text}).encode())
+    with urllib.request.urlopen(req, timeout=120) as r, open(wav, "wb") as f:
+        while chunk := r.read(65536):
+            f.write(chunk)
+    return os.path.getsize(wav) > 1000
 
 
 def last_reply(data):
@@ -102,7 +143,18 @@ def main():
     except (OSError, ValueError):
         pass
     wav = tempfile.mktemp(suffix=".wav", prefix="clawd-")
-    if NAME.startswith("kokoro:"):  # e.g. "kokoro:pm_alex"
+    if NAME.startswith("pocket:"):  # e.g. "pocket:rafael" (Pocket TTS, servidor local em CPU)
+        try:
+            if not pocket_wav(text, wav):
+                return
+        except OSError:
+            return
+    elif NAME.startswith("supertonic:"):  # e.g. "supertonic:F4" (Supertonic 3, CPU, carrega em ~0,5 s)
+        r = subprocess.run([str(SUPER_PY), str(HERE / "tools" / "supertonic_wav.py"), NAME.split(":", 1)[1], wav],
+                           input=text.encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode != 0 or not os.path.exists(wav):
+            return
+    elif NAME.startswith("kokoro:"):  # e.g. "kokoro:pm_alex"
         import soundfile as sf
         from kokoro_onnx import Kokoro
 

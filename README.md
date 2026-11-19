@@ -83,9 +83,41 @@ com `five_hour.used_percentage` em 85 (o `statusLine` o sobrescreve na próxima 
 O arquivo `vocabulario.txt` guarda palavras que o whisper costuma errar: uma por linha (dica para ele escrever certo) ou `errado => certo` (troca depois da transcrição). Edite à vontade; vale no próximo ditado.
 
 ## Voz (opcional)
-`voice.py` escuta o microfone (faster-whisper, offline) e `speak.py` fala ao fim de cada resposta (Piper ou
-Kokoro). Os modelos vão em `voices/` (fora do git, são grandes). Instale as dependências extras do
-`requirements.txt`.
+`voice.py` escuta o microfone (faster-whisper, offline) e `speak.py` fala ao fim de cada resposta. A voz fica em
+`voices/current`, no formato `motor:voz`:
+
+| Valor | Motor |
+|---|---|
+| **`supertonic:F4`** (a que uso) | [Supertonic 3](https://github.com/supertone-oss-archive/supertonic): 10 vozes (`F1`-`F5`, `M1`-`M5`) |
+| `pocket:rafael` | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), sobe um servidor local (porta 8765) |
+| `kokoro:pf_dora`, `kokoro:pm_alex` | Kokoro (pt-BR, offline) |
+| `pt_BR-faber-medium` etc. | Piper |
+
+Instalação do Supertonic (só CPU, ~200 MB):
+```bash
+python -m venv .venv-super && .venv-super/bin/pip install supertonic soundfile
+echo -n supertonic:F4 > voices/current
+```
+Os modelos do Kokoro/Piper vão em `voices/` (fora do git, são grandes); veja `requirements.txt`.
+
+### Qual voz usar? Testes só com CPU
+Testei vozes locais em pt-BR numa máquina **sem GPU forte** (CPU de 16 threads, GTX 1650 de 4 GB), com a frase
+"Olá, eu sou a Clau, sua assistente. O que vamos fazer hoje?" e um parágrafo de ~24 s. "Velocidade" é quanto tempo leva
+para gerar 1 s de fala (menor = melhor):
+
+| Motor | Onde roda | Velocidade | Instalação | Resultado |
+|---|---|---|---|---|
+| **Supertonic 3** | CPU | **0,2 s** (parágrafo de 24 s em 4,7 s) | 200 MB | **a escolhida**: rápida, carrega em 0,5 s, sem servidor |
+| Pocket TTS | CPU | 0,5 s (frase de 4 s em 2 s) | 1,3 GB | boa, mas precisa de servidor (modelo leva ~12 s para carregar) |
+| Kokoro | CPU | não medi | ~340 MB | boa e leve; só 3 vozes em pt-BR |
+| Chatterbox | CPU | 4,5 s | 6 GB | funciona, mas lento demais; na GPU de 4 GB faltou memória e em `float16` gerou áudio inválido |
+| Qwen3-TTS 0.6B | CPU | ~5 s | 2,4 GB | lento; na GPU de 4 GB, `float16` deu áudio inválido e `float32` faltou memória |
+
+Chatterbox e Qwen3-TTS têm qualidade ótima, mas pedem uma GPU maior (e `bfloat16`); numa máquina só com CPU ou com uma
+placa pequena, não compensam. Seus números podem variar.
+
+**Licenças:** o código do Supertonic é MIT, mas o repositório foi **arquivado** pelo autor (sem atualizações) e os pesos
+do modelo usam a licença **OpenRAIL-M**, que traz restrições de uso; leia-a antes de redistribuir. O Pocket TTS é MIT.
 
 ## Sprites
 Os quadros ficam em `sprites/` (`{folha}{n}.png`) e vêm de folhas 8x4 com fundo magenta:

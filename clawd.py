@@ -969,6 +969,13 @@ def main():
     app = QApplication(sys.argv)
     w = Clawd()
     w.show()
+    try:  # voz Pocket TTS: sobe o servidor já na abertura, para a 1ª fala não esperar o modelo carregar
+        if (HERE / "voices" / "current").read_text().startswith("pocket:"):
+            import threading
+            import speak  # noqa: E402
+            threading.Thread(target=speak.pocket_servidor, daemon=True).start()
+    except OSError:
+        pass
     import voice  # noqa: E402
     voice.attach(w)
     import ditado  # noqa: E402
