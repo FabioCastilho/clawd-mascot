@@ -1,12 +1,12 @@
 PyQt6
+Pillow
+numpy
 python-xlib        # opcional: esconde a janela da barra de tarefas (X11)
 # voz (opcional; sem isso use CLAWD_VOICE=0 e CLAWD_SPEAK=0)
-numpy
 sounddevice
 faster-whisper
 piper-tts
 kokoro-onnx
 soundfile
 # só para tools/montar_frente.py (recortar folhas de sprites)
-Pillow
 scipy

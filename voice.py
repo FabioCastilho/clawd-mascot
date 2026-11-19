@@ -29,6 +29,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 ENABLED = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.voice-on"  # created by `clawd-voz on`
 SPEAKING = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.speaking"
+PENDENTE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.pendente"  # resposta guardada enquanto você grava
 PTT = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.gravando"  # ditado por atalho (ditado.py) em andamento
 RATE = 16000
 BLOCK = 512  # 32 ms

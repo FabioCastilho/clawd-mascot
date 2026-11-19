@@ -1,4 +1,5 @@
 {
+  "statusLine": {"type": "command", "command": "python3 CAMINHO/clawd-statusline.py"},
   "hooks": {
     "SessionStart":     [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py SessionStart"}]}],
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 CAMINHO/clawd-hook.py UserPromptSubmit"}]}],

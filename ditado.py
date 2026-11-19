@@ -11,12 +11,14 @@ Fluxo (tudo local, faster-whisper):
 Env:
   CLAWD_DITADO=0              desliga o recurso
   CLAWD_DITADO_ENTER=0        digita o texto mas não aperta Enter (para você revisar)
-  CLAWD_DITADO_CORRECAO=local|haiku|off   (padrão local; haiku manda o texto ao Claude Haiku via `claude -p`)
+  CLAWD_DITADO_CORRECAO=local|haiku|off   (sem ela vale o botão "H" do menu: desligado = local; ligado = Haiku via `claude -p`)
+  vocabulario.txt              palavras que o whisper erra: dicas e trocas ("errado => certo")
   CLAWD_VOICE_MODEL, CLAWD_VOICE_LANG, CLAWD_VOICE_DEVICE   como no voice.py
 """
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 
@@ -24,6 +26,10 @@ import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 import voice
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+HAIKU = Path.home() / ".clawd-haiku"  # criado/removido pelo botão "H" do menu
 
 RATE = 16000
 MIN_SECONDS = 0.5    # gravações menores são ignoradas (aperto sem querer)
@@ -34,11 +40,33 @@ TERMOS = {"clawd": "Clawd", "claude": "Claude", "python": "Python", "github": "G
 ENCHIMENTO = re.compile(r"(?<!\w)(?:h+u+m+|u+m+(?=,)|h+ã+|ahn+|u+h+m+|hmm+|ãh+|é+h+|éé+)(?!\w)[,.]?\s*", re.I)
 
 
+def carregar_vocabulario():
+    """vocabulario.txt (editável): (dicas para o whisper, [(regex do erro, certo)]). Relido a cada ditado."""
+    dicas, trocas = [], []
+    try:
+        linhas = (HERE / "vocabulario.txt").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return dicas, trocas
+    for ln in linhas:
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        if "=>" in ln:
+            errado, certo = (x.strip() for x in ln.split("=>", 1))
+            if errado:
+                trocas.append((re.compile(r"(?<!\w)" + re.escape(errado) + r"(?!\w)", re.I), certo))
+        else:
+            dicas.append(ln)
+    return dicas, trocas
+
+
 def corrigir_local(texto):
     """Arruma o que dá para arrumar sem modelo: espaços, enchimento ("hum"), repetições, maiúsculas, pontuação."""
     t = texto.strip()
     if not t or t[0] in "/!":  # comando do Claude Code (/clear...) ou do shell: não mexe
         return t
+    for rx, certo in carregar_vocabulario()[1]:
+        t = rx.sub(lambda _m, c=certo: c, t)
     t = ENCHIMENTO.sub("", t)
     t = re.sub(r"\b(\w{1,3})(?:\s+\1\b)+", r"\1", t, flags=re.I)        # "o o" -> "o"
     t = re.sub(r"\s+", " ", t)
@@ -74,6 +102,12 @@ def corrigir_haiku(texto):
     if r.returncode or not out or len(out) > 2 * len(texto) + 40:  # vazio ou "respondeu" em vez de corrigir
         return None
     return out
+
+
+def modo_correcao():
+    """CLAWD_DITADO_CORRECAO (local|haiku|off) manda; sem ela vale o botão do menu (~/.clawd-haiku)."""
+    env = os.environ.get("CLAWD_DITADO_CORRECAO", "").lower()
+    return env or ("haiku" if HAIKU.exists() else "local")
 
 
 def corrigir(texto, modo):
@@ -140,9 +174,17 @@ class Ditado(QObject):
         if len(audio) < MIN_SECONDS * RATE:
             self.log("gravação curta demais, ignorada")
             self.widget.set_state("idle")
+            self.ler_pendente()
             return
         self.widget.set_state("thinking")
         threading.Thread(target=self.processar, args=(audio,), daemon=True).start()
+
+    def ler_pendente(self):
+        """Se o Claude terminou enquanto você falava, ele não falou por cima; agora lê o que ficou pendente."""
+        if voice.PENDENTE.exists():
+            self.log("lendo a resposta que ficou pendente")
+            subprocess.Popen([sys.executable, str(HERE / "speak.py"), "--pendente"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def processar(self, audio):
         try:
@@ -150,13 +192,13 @@ class Ditado(QObject):
             with voice.MODEL_LOCK:
                 segs, _ = model.transcribe(audio, language=os.environ.get("CLAWD_VOICE_LANG", "pt"), beam_size=5,
                                            vad_filter=True, condition_on_previous_text=False,
-                                           initial_prompt="Clawd, Claude Code, terminal, Python, git, GitHub.")
+                                           initial_prompt=", ".join(carregar_vocabulario()[0] or ["Clawd", "Claude Code"]) + ".")
                 bruto = " ".join(s.text.strip() for s in segs).strip()
             self.log("transcrito:", repr(bruto))
             if voice.norm(bruto) in voice.JUNK:
                 self.fim.emit("vazio")
                 return
-            texto = corrigir(bruto, os.environ.get("CLAWD_DITADO_CORRECAO", "local").lower())
+            texto = corrigir(bruto, modo_correcao())
             self.log("corrigido:", repr(texto))
             if not voice.send_text(texto):
                 self.fim.emit("erro")
@@ -170,6 +212,7 @@ class Ditado(QObject):
             self.fim.emit("erro")
 
     def _fim(self, r):
+        self.ler_pendente()
         if self.widget.state in ("thinking", "listening"):
             self.widget.set_state({"ok": "happy", "vazio": "idle"}.get(r, "alert"))
 

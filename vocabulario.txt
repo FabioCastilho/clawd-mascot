@@ -1,0 +1,37 @@
+# Vocabulário do ditado (ditado.py). Uma entrada por linha; linhas com # são comentários.
+#   palavra            -> o whisper ouve como dica e tende a escrever certo
+#   errado => certo    -> troca depois da transcrição (sem diferenciar maiúsculas)
+# Edite à vontade; vale a partir do próximo ditado.
+
+# dicas
+Clawd
+Claude Code
+Haiku
+Sonnet
+Opus
+Anthropic
+Ctrl+Alt+Espaço
+terminal
+Konsole
+Python
+GitHub
+git
+commit
+push
+pull request
+branch
+README
+PyQt
+whisper
+Kokoro
+Piper
+hook
+
+# trocas
+control out espaço => Ctrl+Alt+Espaço
+control alt espaço => Ctrl+Alt+Espaço
+high-kill => Haiku
+high kill => Haiku
+raiku => Haiku
+claude code => Claude Code
+git hub => GitHub

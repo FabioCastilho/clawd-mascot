@@ -86,3 +86,54 @@ def collect():
         "window": _sum(window),
         "window_turns": len(window),
     }
+
+
+# ---------- Limites do plano (vêm do statusLine do Claude Code; veja clawd-statusline.py) ----------------------------
+
+import os  # noqa: E402
+
+LIMITES = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.limites.json"
+
+
+def _ritmo(hist, chave_p, chave_r, reset, min_span):
+    """Pontos de % por segundo na janela atual (None se ainda não dá para estimar)."""
+    pts = [(a["t"], a[chave_p]) for a in hist if a.get(chave_r) == reset and a.get(chave_p) is not None]
+    if len(pts) < 2:
+        return None
+    (t0, p0), (t1, p1) = pts[0], pts[-1]
+    if t1 - t0 < min_span or p1 <= p0:
+        return None
+    return (p1 - p0) / (t1 - t0)
+
+
+def _janela(rl, nome, hist, chave_p, chave_r, min_span, agora):
+    j = (rl or {}).get(nome)
+    if not j or j.get("used_percentage") is None:
+        return None
+    reset, pct = j.get("resets_at"), float(j["used_percentage"])
+    renovou = reset is not None and reset <= agora  # o dado é de antes da renovação: já zerou
+    if renovou:
+        pct = 0.0
+    out = {"pct": pct, "reset": reset, "renovou": renovou, "ritmo": None, "projecao": None, "esgota_em": None}
+    if reset and not renovou:
+        r = _ritmo(hist, chave_p, chave_r, reset, min_span)
+        if r:
+            out["ritmo"] = r
+            out["projecao"] = pct + r * (reset - agora)          # % esperado na hora da renovação
+            if out["projecao"] >= 100:
+                out["esgota_em"] = (100 - pct) / r                # segundos até bater 100%
+    return out
+
+
+def limites():
+    """Limites do plano (5h e semana) + contexto, ou None se o statusLine ainda não gravou nada."""
+    try:
+        d = json.loads(LIMITES.read_text())
+    except (OSError, ValueError):
+        return None
+    agora = time.time()
+    rl, hist = d.get("rate_limits"), d.get("historico", [])
+    return {"idade": agora - d.get("quando", agora), "modelo": d.get("modelo"),
+            "contexto_pct": d.get("contexto_pct"), "contexto_tamanho": d.get("contexto_tamanho"),
+            "cinco_horas": _janela(rl, "five_hour", hist, "p5", "r5", 600, agora),
+            "semana": _janela(rl, "seven_day", hist, "p7", "r7", 3600, agora)}

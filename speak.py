@@ -18,6 +18,8 @@ _CUR = HERE / "voices" / "current"  # name of the chosen voice, e.g. pt_BR-faber
 NAME = _CUR.read_text().strip() if _CUR.exists() else "pt_BR-faber-medium"  # "kokoro:<voz>" or a Piper voice name
 MODEL = HERE / "voices" / f"{NAME}.onnx"
 FLAG = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.speaking"
+PTT = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.gravando"    # ditado por atalho gravando (ditado.py)
+PENDENTE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "clawd.pendente"  # resposta que ficou sem ser falada
 MAX_CHARS = int(os.environ.get("CLAWD_SPEAK_CHARS", "220"))
 
 
@@ -66,14 +68,33 @@ def summarize(text):
 def main():
     if os.environ.get("CLAWD_SPEAK") == "0" or (Path.home() / ".clawd-mute").exists():
         return
-    try:
-        data = json.load(sys.stdin)
-    except ValueError:
-        data = {}
+    pendente = "--pendente" in sys.argv  # chamado pelo ditado.py depois de você terminar de falar
+    avulso = sys.argv[sys.argv.index("--texto") + 1] if "--texto" in sys.argv[:-1] else None  # fala uma frase pronta
+    data = {}
+    if avulso is not None and (PTT.exists() or FLAG.exists()):
+        return  # você está gravando, ou ele já está falando: uma frase avulsa não atrapalha
+    if not pendente and avulso is None:
+        try:
+            data = json.load(sys.stdin)
+        except ValueError:
+            data = {}
     if os.fork():
         return  # hook returns now
     os.setsid()
-    text = summarize(last_reply(data))
+    if avulso is not None:
+        text = avulso.strip()
+    elif pendente:
+        try:
+            text = PENDENTE.read_text().strip()
+            PENDENTE.unlink()
+        except OSError:
+            return
+    else:
+        text = summarize(last_reply(data))
+        if text and PTT.exists():  # você está falando: não atrapalha, guarda para ler depois
+            PENDENTE.write_text(text)
+            return
+        PENDENTE.unlink(missing_ok=True)  # resposta nova vale mais que a guardada
     if not text:
         return
     try:  # stop whatever is still talking

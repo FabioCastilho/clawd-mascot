@@ -4,13 +4,14 @@
 Janela transparente, sem borda e sempre no topo. Os hooks do Claude Code escrevem o estado atual em
 STATE_FILE (veja clawd-hook.py) e o mascote lê esse arquivo.
 
-- clique = carinho | arrastar = mover | roda do mouse = tamanho | duplo clique = menu (voz, som, uso, sair)
+- clique = carinho | arrastar = mover | roda do mouse = tamanho | duplo clique = menu (correção do ditado, som, uso, sair)
 - quando está parado, passeia pela tela e volta ao canto inferior direito (CLAWD_ANDAR=0 desliga)
 - os quadros vêm de sprites/ (veja tools/montar_frente.py)
 """
 import math
 import os
 import random
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -20,18 +21,24 @@ os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import habitos  # noqa: E402
+import skins  # noqa: E402
 import usage  # noqa: E402
+from datetime import datetime  # noqa: E402
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer  # noqa: E402
-from PyQt6.QtGui import QColor, QFont, QPainter, QPixmap, QTransform  # noqa: E402
+from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, QTimer  # noqa: E402
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPixmap, QPolygonF, QTransform  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget  # noqa: E402
 
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 STATE_FILE = RUNTIME / "clawd.state"
-VOICE_ON = RUNTIME / "clawd.voice-on"
 MUTE = Path.home() / ".clawd-mute"
+SKIN_FILE = Path.home() / ".clawd-skin"  # nome da pasta da skin escolhida (vazio = padrão)
+HAIKU = Path.home() / ".clawd-haiku"  # existe = o ditado manda o texto ao Claude Haiku para corrigir
 PACK = HERE / "sprites"
 
+PTT = RUNTIME / "clawd.gravando"  # ditado gravando: ele não fala por cima
+GRAVIDADE = 2600.0  # px/s² (com zoom 1) na queda depois de soltar
 SPRITE_W, SPRITE_H, PAD = 190, 120, 10  # tamanho lógico do mascote com zoom 1
 HAPPY_SECONDS = 4.0
 ALERT_MAX = 120.0
@@ -44,6 +51,7 @@ INK = QColor(24, 18, 22)
 #   c = costas          d = direita, ações     e = direita, emoções
 #   f = frente 1        g = frente 2
 #   h = frente, trabalho   i = frente, ócio   j = frente, extras
+#   k = arrastar e dormir (pendurado, caindo, pouso, dormindo deitado)
 # Um quadro com "~" na frente sai espelhado (lado esquerdo).
 
 
@@ -97,10 +105,14 @@ ANIMS = {
     "caminhar_esq": (7.0, R("d", 0, 7, True)),
     "andar":      (8.0, R("d", 8, 15)),
     "andar_esq":  (8.0, R("d", 8, 15, True)),
+    "dormindo":   (2.0, R("k", 24, 31)),     # deitado, respirando e com os Z
+    "pendurado":  (6.0, R("k", 0, 7)),       # segurado no ar pelo mouse
+    "caindo":     (8.0, R("k", 8, 15)),      # solto no ar
+    "pouso!":     (6.0, R("k", 16, 23)),     # "!" = toca uma vez só, a partir de owner._pouso
     "especial":   (5.0, R("d", 16, 23)),
     "pulo_esq":   (5.0, R("d", 16, 23, True)),
 }
-ALIAS = {"original": "neutral", "dormindo": "sleep"}
+ALIAS = {"original": "neutral"}
 
 # estado (escrito pelos hooks) -> animação
 STATE_SPRITE = {"idle": "neutral", "thinking": "thinking", "working": "coding",
@@ -137,11 +149,18 @@ class SheetSprites:
 
     def __init__(self, owner):
         self.owner = owner
+        self.skin = ""   # pasta em skins/ ("" = a padrão, sprites/)
         self._pm = {}
+
+    def trocar_skin(self, pasta):
+        self.skin = pasta
+        self._pm.clear()
 
     def _frame(self, key):
         if key not in self._pm:
-            pm = QPixmap(str(PACK / f"{key.lstrip('~')}.png"))
+            img = skins.quadro(key.lstrip("~"), self.skin)
+            qi = QImage(img.tobytes("raw", "RGBA"), img.width, img.height, QImage.Format.Format_RGBA8888)
+            pm = QPixmap.fromImage(qi.copy())
             self._pm[key] = pm.transformed(QTransform().scale(-1, 1)) if key.startswith("~") else pm
         return self._pm[key]
 
@@ -150,6 +169,9 @@ class SheetSprites:
         if name not in ANIMS:
             return default
         fps, frames = ANIMS[name]
+        if name.endswith("!"):  # toca uma vez, desde o pouso, e fica no último quadro
+            i = int(max(0.0, time.monotonic() - self.owner._pouso) * fps)
+            return self._frame(frames[min(i, len(frames) - 1)])
         return self._frame(frames[int(self.owner.t * fps) % len(frames)])
 
     __getitem__ = get
@@ -157,90 +179,74 @@ class SheetSprites:
 
 # --- painéis -------------------------------------------------------------------------------------------------
 
-def fmt(n):
-    if n >= 1e6:
-        return f"{n / 1e6:.2f}M"
-    if n >= 1e3:
-        return f"{n / 1e3:.1f}k"
-    return str(int(n))
+VERDE, AMBAR, VERMELHO = QColor(110, 220, 130), QColor(255, 190, 90), QColor(255, 105, 95)
+MUTED, TEXTO, TRILHO = QColor(160, 154, 176), QColor(238, 234, 245), QColor(58, 54, 72)
+DIAS = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
 
 
-def fmt_duration(sec):
-    m = int(sec // 60)
+def cor_pct(p):
+    return VERDE if p < 60 else AMBAR if p < 85 else VERMELHO
+
+
+def fmt_dur(sec):
+    m = max(0, int(sec // 60))
+    if m >= 1440:
+        return f"{m // 1440}d {m % 1440 // 60}h"
     return f"{m // 60}h{m % 60:02d}" if m >= 60 else f"{m} min"
 
 
-class UsagePanel(QWidget):
-    """Cartão com o uso de tokens da sessão atual; fecha ao clicar fora."""
+def fmt_reset(ts, semana):
+    dt = datetime.fromtimestamp(ts)
+    return f"{DIAS[dt.weekday()]} {dt:%H:%M}" if semana else f"{dt:%H:%M}"
 
-    def __init__(self):
-        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.label = QLabel()
-        self.label.setTextFormat(Qt.TextFormat.RichText)
-        self.label.setStyleSheet("color:#eee; font-size:10pt;")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 12)
-        lay.addWidget(self.label)
-        self.timer = QTimer(self, interval=USAGE_REFRESH_MS, timeout=self.refresh)
-        self.closed_at = 0.0
 
-    def refresh(self):
-        data = usage.collect()
-        if not data:
-            self.label.setText("Nenhuma sessão encontrada em ~/.claude/projects")
-            return
-        s, w = data["session"], data["window"]
-        total = s["input"] + s["output"] + s["cache_read"] + s["cache_write"]
-        row = lambda k, v: f"<tr><td style='color:#aaa'>{k}&nbsp;&nbsp;</td><td align='right'>{v}</td></tr>"
-        self.label.setText(
-            "<div style='color:#d97757; font-weight:bold; font-size:11pt'>Sessão atual</div>"
-            f"<div style='color:#aaa'>{data['model']}</div>"
-            "<table cellspacing='2'>"
-            + row("Mensagens", data["turns"])
-            + row("Duração", fmt_duration(data["duration"]))
-            + row("Entrada", fmt(s["input"]))
-            + row("Saída", fmt(s["output"]))
-            + row("Cache lido", fmt(s["cache_read"]))
-            + row("Cache escrito", fmt(s["cache_write"]))
-            + row("<b>Total</b>", f"<b>{fmt(total)}</b>")
-            + row("Contexto agora", fmt(data["context"]))
-            + "</table>"
-            "<div style='color:#d97757; font-weight:bold; font-size:11pt; margin-top:6px'>Últimas 5h (todas as sessões)</div>"
-            "<table cellspacing='2'>"
-            + row("Mensagens", data["window_turns"])
-            + row("Saída", fmt(w["output"]))
-            + row("Entrada + cache escrito", fmt(w["input"] + w["cache_write"]))
-            + row("Cache lido", fmt(w["cache_read"]))
-            + "</table>"
-        )
-        self.adjustSize()
+def fmt_tokens(n):
+    return f"{n / 1e6:g}M" if n >= 1e6 else f"{n / 1e3:g}k" if n >= 1e3 else str(int(n))
 
-    def show_beside(self, anchor):
-        self.refresh()
-        screen = anchor.screen().availableGeometry()
-        x = anchor.x() - self.width() - 8
-        if x < screen.left():
-            x = anchor.x() + anchor.width() + 8
-        y = max(screen.top(), min(anchor.y(), screen.bottom() - self.height()))
-        self.move(x, y)
-        self.show()
-        self.timer.start()
 
-    def hideEvent(self, e):
-        self.timer.stop()
-        self.closed_at = time.monotonic()
-        super().hideEvent(e)
+class Barra(QWidget):
+    """Título + porcentagem + barra de progresso (com a projeção até a renovação) + até duas linhas de texto."""
+
+    def __init__(self, titulo):
+        super().__init__()
+        self.titulo, self.pct, self.proj, self.linhas = titulo, 0.0, None, []
+        self.setFixedSize(300, 76)
+
+    def set(self, pct, proj, linhas):
+        self.pct, self.proj, self.linhas = pct, proj, linhas
+        self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QColor(217, 119, 87, 160))
-        p.setBrush(QColor(32, 30, 34, 245))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 12, 12)
+        cor = cor_pct(self.pct)
+        f = QFont("sans", 10, QFont.Weight.DemiBold)
+        p.setFont(f)
+        p.setPen(TEXTO)
+        p.drawText(QRectF(0, 0, 220, 20), Qt.AlignmentFlag.AlignVCenter, self.titulo)
+        p.setPen(cor)
+        p.drawText(QRectF(180, 0, 120, 20), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                   f"{self.pct:.0f}%")
+        bar = QRectF(0, 25, 300, 12)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(TRILHO)
+        p.drawRoundedRect(bar, 6, 6)
+        if self.proj and self.proj > self.pct:  # onde ele deve chegar até a renovação (faixa clara)
+            c2 = QColor(cor_pct(min(self.proj, 100)))
+            c2.setAlpha(90)
+            p.setBrush(c2)
+            p.drawRoundedRect(QRectF(0, 25, 300 * min(self.proj, 100) / 100, 12), 6, 6)
+        if self.pct > 0:
+            p.setBrush(cor)
+            p.drawRoundedRect(QRectF(0, 25, max(12.0, 300 * min(self.pct, 100) / 100), 12), 6, 6)
+        p.setFont(QFont("sans", 9))
+        for i, (txt, c) in enumerate(self.linhas[:2]):
+            p.setPen(c or MUTED)
+            p.drawText(QRectF(0, 41 + i * 17, 300, 17), Qt.AlignmentFlag.AlignVCenter, txt)
 
 
-MIC = ("..XXX..", ".XXXXX.", ".XXXXX.", ".XXXXX.", "X.XXX.X", "X.XXX.X", ".X...X.", "..XXX..", "...X...", "..XXX..")
+SKIN_B = ("...X...", "..XXX..", ".XXXXX.", "XXXXXXX", ".XXXXX.", "..XXX..", "...X...")
+HAIKU_H = ("X.....X", "X.....X", "X.....X", "XXXXXXX", "X.....X", "X.....X", "X.....X")
 SPK = ("....X....", "...XX.X..", "XXXXX..X.", "XXXXX.X.X", "XXXXX.X.X", "XXXXX..X.", "...XX.X..", "....X....")
 SPK_OFF = ("....X....", "...XX....", "XXXXX....", "XXXXX....", "XXXXX....", "XXXXX....", "...XX....", "....X....")
 CROSS = ("X.....X", ".X...X.", "..X.X..", "...X...", "..X.X..", ".X...X.", "X.....X")
@@ -256,7 +262,7 @@ def pixel_button(p, key, r, on, hover, t):
     if key == "quit":
         face, fg = QColor(206, 74, 66), QColor(255, 244, 240)
     elif on:
-        face = QColor(90, 230, 235) if key == "mic" else QColor(255, 190, 120)
+        face = {"haiku": QColor(190, 150, 255), "skin": QColor(255, 150, 200)}.get(key, QColor(255, 190, 120))
         fg = QColor(18, 22, 36)
     else:
         face, fg = QColor(58, 54, 68), QColor(170, 166, 180)
@@ -281,8 +287,10 @@ def pixel_button(p, key, r, on, hover, t):
                 if ch == "X":
                     cell(ox + i, oy + j, c)
 
-    if key == "mic":
-        bitmap(MIC, 3, 2, fg)
+    if key == "skin":
+        bitmap(SKIN_B, 3, 3, fg)
+    elif key == "haiku":
+        bitmap(HAIKU_H, 3, 3, fg)
     elif key == "quit":
         bitmap(CROSS, 3, 3, fg)
     elif on:
@@ -290,25 +298,24 @@ def pixel_button(p, key, r, on, hover, t):
     else:
         bitmap(SPK_OFF, 1, 3, fg)
         bitmap(CROSS, 5, 4, QColor(255, 110, 100))
-    if on and key == "mic":  # ponto "ao vivo"
-        cell(n - 4, 1, QColor(255, 80, 70) if int(t * 2) % 2 == 0 else QColor(255, 150, 140), 2, 2)
     p.restore()
 
 
 class ToggleBar(QWidget):
-    """Botões de microfone / som / sair, no topo do menu."""
-    KEYS = ("mic", "speak", "quit")
+    """Botões do menu, cada um com a legenda do estado atual embaixo: Haiku/Local, Voz/Mudo, Sair."""
+    KEYS = ("skin", "haiku", "speak", "quit")
+    DICAS = {"skin": "Skin: {}", "haiku": "Correção do ditado: {}", "speak": "Fala do Clawd: {}", "quit": "Sair"}
 
     def __init__(self, owner):
         super().__init__()
         self.owner = owner
         self.hover = None
         self.setMouseTracking(True)
-        self.setFixedSize(3 * 28 + 2 * 12, 30)
+        self.setFixedSize(300, 56)
         QTimer(self, interval=250, timeout=self.update).start()
 
     def rects(self):
-        return {k: QRectF(i * 40, 1, 28, 28) for i, k in enumerate(self.KEYS)}
+        return {k: QRectF(14 + i * 72, 1, 28, 28) for i, k in enumerate(self.KEYS)}
 
     def at(self, pos):
         return next((k for k, r in self.rects().items() if r.contains(QPointF(pos))), None)
@@ -316,12 +323,20 @@ class ToggleBar(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         o = self.owner
+        legenda = {"skin": o.skin_nome()[:9], "haiku": "Haiku" if o.haiku_on else "Local", "speak": "Voz" if o.speak_on else "Mudo", "quit": "Sair"}
         for k, r in self.rects().items():
-            on = o.voice_on if k == "mic" else o.speak_on if k == "speak" else True
+            on = o.haiku_on if k == "haiku" else o.speak_on if k == "speak" else True
             pixel_button(p, k, r, on, self.hover == k, o.t)
+            p.setPen(TEXTO if on or k == "quit" else MUTED)
+            p.setFont(QFont("sans", 9))
+            p.drawText(QRectF(r.center().x() - 40, 33, 80, 18), Qt.AlignmentFlag.AlignCenter, legenda[k])
 
     def mouseMoveEvent(self, e):
         self.hover = self.at(e.position())
+        o = self.owner
+        estado = {"skin": f"{o.skin_nome()} (clique para trocar)", "haiku": "Haiku (envia o texto à Anthropic)" if o.haiku_on else "local (nada sai do computador)",
+                  "speak": "ligada" if o.speak_on else "desligada"}
+        self.setToolTip(self.DICAS[self.hover].format(estado.get(self.hover, "")) if self.hover else "")
         self.setCursor(Qt.CursorShape.PointingHandCursor if self.hover else Qt.CursorShape.ArrowCursor)
         self.update()
 
@@ -338,12 +353,155 @@ class ToggleBar(QWidget):
             self.update()
 
 
-class MenuPanel(UsagePanel):
-    """Menu do duplo clique: botões no topo e, abaixo, o uso de tokens."""
+class MenuPanel(QWidget):
+    """Menu do duplo clique: botões, limites do plano (5 h e semana) com projeção, e o contexto da conversa."""
 
     def __init__(self, owner):
-        super().__init__()
-        self.layout().insertWidget(0, ToggleBar(owner), 0, Qt.AlignmentFlag.AlignHCenter)
+        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.owner = owner
+        self.closed_at = 0.0
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 16, 22, 14)
+        lay.setSpacing(6)
+        self.titulo = QLabel()
+        self.titulo.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.titulo)
+        lay.addWidget(ToggleBar(owner), 0, Qt.AlignmentFlag.AlignHCenter)
+        self.cinco, self.semana, self.ctx = Barra("Limite de 5 horas"), Barra("Limite da semana"), Barra("Contexto da conversa")
+        for b in (self.cinco, self.semana, self.ctx):
+            lay.addWidget(b)
+        self.aviso = QLabel()
+        self.aviso.setWordWrap(True)
+        self.aviso.setFixedWidth(300)
+        self.aviso.setStyleSheet("color:#a09ab0; font-size:9pt;")
+        lay.addWidget(self.aviso)
+        self.conq = QLabel()
+        self.conq.setWordWrap(True)
+        self.conq.setFixedWidth(300)
+        self.conq.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.conq)
+        self.timer = QTimer(self, interval=USAGE_REFRESH_MS, timeout=self.refresh)
+
+    def refresh(self):
+        lim = usage.limites()
+        modelo = f"<span style='color:#a09ab0; font-size:9pt'>&nbsp;&nbsp;{lim['modelo']}</span>" if lim and lim.get("modelo") else ""
+        self.titulo.setText("<span style='color:#ff9a3c; font-size:13pt; font-weight:bold'>Clawd</span>" + modelo)
+        agora = time.time()
+        c5, sem = (lim or {}).get("cinco_horas"), (lim or {}).get("semana")
+        self.cinco.setVisible(bool(c5))
+        self.semana.setVisible(bool(sem))
+        if c5:
+            self.cinco.set(c5["pct"], c5["projecao"], self._linhas(c5, agora, False))
+        if sem:
+            self.semana.set(sem["pct"], sem["projecao"], self._linhas(sem, agora, True))
+        pc = (lim or {}).get("contexto_pct")
+        self.ctx.setVisible(pc is not None)
+        if pc is not None:
+            tam = lim.get("contexto_tamanho")
+            self.ctx.set(float(pc), None, [(f"de {fmt_tokens(tam)} tokens; ao encher, compacta" if tam else "", None)])
+        if not lim or not (c5 or sem):
+            self.aviso.setText("Sem dados dos limites ainda. Eles chegam pelo statusLine do Claude Code "
+                               "(veja o README) assim que você usar o Claude.")
+        elif lim["idade"] > 600:
+            self.aviso.setText(f"Dados de há {fmt_dur(lim['idade'])}: atualizam quando o Claude Code está em uso.")
+        else:
+            self.aviso.setText("")
+        self.aviso.setVisible(bool(self.aviso.text()))
+        lista = self.owner.habitos.lista()
+        feitas = [n for n, _, ok in lista if ok]
+        faltam = [n for n, _, ok in lista if not ok]
+        self.conq.setText(
+            f"<span style='color:#ff9a3c; font-weight:bold'>★ Conquistas {len(feitas)}/{len(lista)}</span>"
+            + (f"<br><span style='color:#eeeaf5; font-size:9pt'>{' · '.join(feitas)}</span>" if feitas else "")
+            + (f"<br><span style='color:#6f6a80; font-size:9pt'>{' · '.join(faltam)}</span>" if faltam else ""))
+        self.adjustSize()
+
+    @staticmethod
+    def _linhas(j, agora, semana):
+        if j["renovou"]:
+            return [("Janela renovada: o consumo voltou a zero.", VERDE)]
+        L = []
+        if j["reset"]:
+            L.append((f"Renova {fmt_reset(j['reset'], semana)}  ·  em {fmt_dur(j['reset'] - agora)}", None))
+        if j["esgota_em"] is not None:
+            L.append((f"No ritmo atual, acaba em {fmt_dur(j['esgota_em'])}, antes de renovar", VERMELHO))
+        elif j["projecao"] is not None:
+            L.append((f"No ritmo atual, chega a ~{j['projecao']:.0f}% até renovar", cor_pct(j["projecao"])))
+        else:
+            L.append(("Ritmo: juntando dados para estimar…", None))
+        return L
+
+    def show_beside(self, anchor):
+        self.refresh()
+        screen = anchor.screen().availableGeometry()
+        x = anchor.x() - self.width() - 8
+        if x < screen.left():
+            x = anchor.x() + anchor.width() + 8
+        y = max(screen.top(), min(anchor.y(), screen.bottom() - self.height()))
+        self.move(x, y)
+        self.show()
+        self.timer.start()
+
+    def hideEvent(self, e):
+        self.timer.stop()
+        self.closed_at = time.monotonic()
+        super().hideEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QColor(255, 154, 60, 150))
+        p.setBrush(QColor(28, 25, 36, 247))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 16, 16)
+
+
+class Balao(QWidget):
+    """Balãozinho de texto acima (ou abaixo) do mascote; não pega cliques."""
+
+    def __init__(self, dono):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.dono, self.texto, self.ate = dono, "", 0.0
+        self.fonte = QFont("sans", 10, QFont.Weight.DemiBold)
+
+    def mostrar(self, texto, seg):
+        self.texto, self.ate = texto, time.monotonic() + seg
+        r = QFontMetrics(self.fonte).boundingRect(QRect(0, 0, 230, 400), Qt.TextFlag.TextWordWrap, texto)
+        self.resize(r.width() + 44, r.height() + 30 + 8)
+        self.posicionar()
+        self.show()
+
+    def posicionar(self):
+        d, geo = self.dono, self.dono.screen().availableGeometry()
+        x = max(geo.left() + 4, min(d.x() + d.width() // 2 - self.width() // 2, geo.right() - self.width() - 4))
+        self.move(x, max(geo.top() + 4, d.y() - self.height() + 6))
+
+    def tick(self, agora):
+        if self.isVisible():
+            if agora >= self.ate:
+                self.hide()
+            else:
+                self.posicionar()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        corpo = QRectF(1, 1, self.width() - 2, self.height() - 9)
+        p.setPen(QColor(60, 44, 70))
+        p.setBrush(QColor(255, 248, 235))
+        p.drawRoundedRect(corpo, 12, 12)
+        cx = self.width() / 2
+        p.drawPolygon(QPolygonF([QPointF(cx - 6, corpo.bottom() - 1), QPointF(cx + 6, corpo.bottom() - 1),
+                                 QPointF(cx, self.height() - 2)]))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 248, 235))
+        p.drawRect(QRectF(cx - 5, corpo.bottom() - 3, 10, 3))  # esconde a linha da base sob a ponta
+        p.setPen(QColor(50, 36, 58))
+        p.setFont(self.fonte)
+        p.drawText(corpo.adjusted(14, 10, -14, -10), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.texto)
 
 
 # --- o mascote -----------------------------------------------------------------------------------------------
@@ -369,8 +527,15 @@ class Clawd(QWidget):
         self.next_variant = now + random.uniform(25, 60)
         self.happy_pick = random.choice(HAPPY_SPRITES)
         self.pet_until = 0.0
-        self.voice_on = VOICE_ON.exists()
         self.speak_on = not MUTE.exists()
+        self.haiku_on = HAIKU.exists()
+        try:
+            self.skin = SKIN_FILE.read_text().strip()
+        except OSError:
+            self.skin = ""
+        if self.skin not in {p for p, _ in skins.listar()}:
+            self.skin = ""
+        self.sprites.trocar_skin(self.skin)
         self.drag = None
         self.press_pos = None
         self.moved = False
@@ -379,12 +544,25 @@ class Clawd(QWidget):
         self._wlast = now
         self._nome_ant = ""
         self._trans = None
+        self.caindo = False   # solto no ar: cai até o chão
+        self._fy = self._vy = 0.0
+        self._saltos = 0
+        self._pouso = -9.0
+        self._vx = 0.0        # velocidade do arrasto (balança o mascote pendurado)
+        self._ang = 0.0
+        self._ult = None
+        self.habitos = habitos.Habitos()
+        self.balao = Balao(self)
+        self.fila_avisos = []
+        self._aviso_anim = ("", 0.0)
+        self._estado_ant = None
         self.home = (0, 0)
         self.retorno = False  # interrompido longe do canto: volta deslizando
         self.panel = MenuPanel(self)
         self.apply_size()
         QTimer(self, interval=33, timeout=self.tick).start()
         self.place()
+        QTimer.singleShot(6000, lambda: self.fila_avisos.extend(self.habitos.ao_iniciar(time.time())))
 
     # --- janela ---
     def apply_size(self):
@@ -446,13 +624,29 @@ class Clawd(QWidget):
     def sleeping(self):
         return self.state == "idle" and time.monotonic() - self.idle_since > SLEEP_AFTER
 
+    def skin_nome(self):
+        return next((n for p, n in skins.listar() if p == self.skin), "Clawd")
+
+    def trocar_skin(self):
+        """Passa para a próxima skin (e lembra a escolha)."""
+        pastas = [p for p, _ in skins.listar()]
+        self.skin = pastas[(pastas.index(self.skin) + 1) % len(pastas)] if self.skin in pastas else ""
+        self.sprites.trocar_skin(self.skin)
+        try:
+            SKIN_FILE.write_text(self.skin)
+        except OSError:
+            pass
+
     def toggle(self, which):
-        flag = VOICE_ON if which == "mic" else MUTE
+        if which == "skin":
+            self.trocar_skin()
+            return
+        flag = HAIKU if which == "haiku" else MUTE
         if flag.exists():
             flag.unlink(missing_ok=True)
         else:
             flag.touch()
-        self.voice_on, self.speak_on = VOICE_ON.exists(), not MUTE.exists()
+        self.haiku_on, self.speak_on = HAIKU.exists(), not MUTE.exists()
 
     # --- relógio ---
     def tick(self):
@@ -465,8 +659,8 @@ class Clawd(QWidget):
         if self.poll_in <= 0:
             self.poll_in = 0.25
             self.poll_state()
-            self.voice_on = VOICE_ON.exists()  # acompanha também o `clawd-voz` e o comando "para de ouvir"
             self.speak_on = not MUTE.exists()
+            self.haiku_on = HAIKU.exists()
         if self.state == "happy" and self.state_t > HAPPY_SECONDS:
             self.set_state("idle")
         if self.state == "alert" and self.state_t > ALERT_MAX:
@@ -483,16 +677,68 @@ class Clawd(QWidget):
                 self.next_variant = self.variant_until + random.uniform(5, 14)
         else:
             self.variant = ""
+        self._fisica(now, dt)
+        self._avisos(now)
         self._walk_tick(now)
         if self.walk:  # andando: nada de variação de ócio por cima
             self.variant = ""
             self.next_variant = max(self.next_variant, now + 8)
         self.update()
 
+    # --- arrastar com vida: pendurado, queda e pouso ---
+    @property
+    def pendurado(self):
+        return self.drag is not None and self.moved
+
+    def _fisica(self, now, dt):
+        self._vx *= max(0.0, 1 - dt * 6)
+        alvo = max(-30.0, min(30.0, -self._vx * 0.03)) if self.pendurado else 0.0
+        self._ang += (alvo - self._ang) * min(1.0, dt * 8)
+        if not self.caindo:
+            return
+        self._vy += GRAVIDADE * self.zoom * dt
+        self._fy += self._vy * dt
+        chao = self._chao()
+        if self._fy >= chao:
+            self._fy = chao
+            if self._vy > 450 * self.zoom and self._saltos < 1:  # quica uma vez
+                self._vy *= -0.3
+                self._saltos += 1
+            else:
+                self.caindo = False
+                self._pouso = time.monotonic()
+        self.move(self.x(), round(self._fy))
+
+    def _chao(self):
+        return self.screen().availableGeometry().bottom() - self.height() - 20  # a mesma margem do canto
+
+    # --- hábitos, humor e conquistas ---
+    def _avisos(self, now):
+        agora = time.time()
+        if self.state != self._estado_ant:
+            self.fila_avisos += self.habitos.ao_mudar_estado(self._estado_ant, self.state, agora)
+            self._estado_ant = self.state
+        self.fila_avisos += self.habitos.tick(self.state, agora)
+        self.balao.tick(now)
+        if self.fila_avisos and not self.balao.isVisible() and not self.pendurado and not self.caindo:
+            self.mostrar_aviso(self.fila_avisos.pop(0), now)
+
+    def mostrar_aviso(self, a, now):
+        self.balao.mostrar(a.texto, a.seg)
+        if a.anim and self.state in ("idle", "happy"):
+            self.walk = None
+            self._aviso_anim = (a.anim, now + a.seg)
+        if a.fala and self.speak_on and not PTT.exists():
+            subprocess.Popen([sys.executable, str(HERE / "speak.py"), "--texto", a.fala],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     # --- passeio ---
     def _walk_tick(self, now):
         dt = min(0.1, now - self._wlast)
         self._wlast = now
+        if self.caindo or self.pendurado:
+            self.walk, self.retorno = None, False
+            return
         if self.walk:
             if self.state != "idle" or self.drag is not None or self.sleeping:
                 self.retorno = self.drag is None  # o Claude voltou a trabalhar: volta ao canto (se não foi o mouse)
@@ -542,6 +788,14 @@ class Clawd(QWidget):
 
     # --- qual animação ---
     def _base_sprite(self):
+        if self.pendurado:
+            return "pendurado"
+        if self.caindo:
+            return "caindo"
+        if time.monotonic() - self._pouso < 1.4:  # acabou de pousar
+            return "pouso!"
+        if time.monotonic() < self._aviso_anim[1] and self.state in ("idle", "happy"):
+            return self._aviso_anim[0]
         if self.walk and self.state == "idle" and time.monotonic() >= self.pet_until:
             if self.walk.get("pausa"):
                 return "acenar"
@@ -562,7 +816,7 @@ class Clawd(QWidget):
             t = TRANSICOES.get((ant, nome)) or TRANSICOES.get((ant, "*")) or TRANSICOES.get(("*", nome))
             if t and ant and nome != t[0]:
                 self._trans = (t[0], now + t[1])
-        if self._trans and now < self._trans[1] and nome not in ("andar", "andar_esq", "acenar"):
+        if self._trans and now < self._trans[1] and nome not in ("andar", "andar_esq", "acenar", "pendurado", "caindo", "pouso!"):
             return self._trans[0]
         return nome
 
@@ -639,6 +893,14 @@ class Clawd(QWidget):
         sx *= ex[2]
         sy *= ex[3]
 
+        if self.pendurado:  # pendurado pela cabeça: balança como pêndulo
+            p.save()
+            p.translate(cx, base - h * 0.75)  # pivô no topo da cabeça (que fica a ~25% da altura do quadro)
+            p.rotate(self._ang)
+            p.drawPixmap(QRectF(-w / 2, -h * 0.25, w, h), pm, QRectF(pm.rect()))
+            p.restore()
+            return
+
         # sombra suave no chão
         lift = min(1.0, max(0.0, -dy / (12 * z))) if z else 0
         p.setPen(Qt.PenStyle.NoPen)
@@ -664,6 +926,8 @@ class Clawd(QWidget):
     # --- mouse ---
     def mousePressEvent(self, e):
         self.walk = None  # pegou nele: para de andar
+        self.caindo = False
+        self._ult = None
         self.press_pos = e.globalPosition().toPoint()
         self.moved = False
         self.drag = self.press_pos - self.frameGeometry().topLeft()
@@ -673,12 +937,19 @@ class Clawd(QWidget):
             if (e.globalPosition().toPoint() - self.press_pos).manhattanLength() > 4:
                 self.moved = True
             if self.moved:
-                self.move(e.globalPosition().toPoint() - self.drag)
+                g = e.globalPosition().toPoint()
+                agora = time.monotonic()
+                if self._ult and agora > self._ult[1]:
+                    self._vx = 0.6 * self._vx + 0.4 * (g.x() - self._ult[0]) / (agora - self._ult[1])
+                self._ult = (g.x(), agora)
+                self.move(g - self.drag)
 
     def mouseReleaseEvent(self, e):
         if self.drag is not None and not self.moved:  # um clique simples = carinho
             self.pet_until = time.monotonic() + 1.8
             self.happy_pick = random.choice(HAPPY_SPRITES)
+        elif self.drag is not None and self.y() < self._chao() - 4:  # soltou no ar: cai
+            self.caindo, self._fy, self._vy, self._saltos = True, float(self.y()), 0.0, 0
         self.drag = None
 
     def wheelEvent(self, e):
