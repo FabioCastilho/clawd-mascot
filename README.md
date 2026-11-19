@@ -30,7 +30,9 @@ do hook e escolhe o estado pela ferramenta usada.
 ## Skins
 O botão de losango no menu (duplo clique) troca a skin e lembra a escolha (`~/.clawd-skin`). Vêm 6 além do
 padrão: **Brasa, Floresta, Gelo, Sakura e Vampiro** (só recolorem o Clawd) e **Luna**, um personagem
-inteiro diferente (cabelo de cristal azul, fones verde-água e capa estrelada) com todos os quadros próprios. Uma skin é uma pasta em `skins/<nome>/`:
+inteiro diferente (cabelo de cristal azul, fones verde-água e capa estrelada) com todos os quadros próprios.
+
+![Luna em algumas das animações](docs/luna.gif) Uma skin é uma pasta em `skins/<nome>/`:
 - `skin.json` com uma receita de cores, sem PNGs: `{"nome": "Gelo", "recolorir": {"cabelo": 180, "capa": -50}}`.
   `cabelo` e `capa` giram o matiz em graus (a pele clara não muda); `cabelo_sat` e `capa_sat` multiplicam a
   saturação (0 = cinza).
